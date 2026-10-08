@@ -99,6 +99,25 @@ def cross_result(method: MethodRef, dataset: DatasetVersion, result, *, run_id: 
         finding_ids=(finding_id,), run_id=run_id)
 
 
+def duplicate_payment_result(method: MethodRef, dataset: DatasetVersion, result, *, run_id: int, finding_id: int,
+                             links: int, truncated: bool, params: dict, salt: bytes | None) -> MethodResult:
+    subjects, mode = _key_subjects([f"{g['period']}|{g['names'][0]}" for g in result.top_groups], salt)
+    signals = [Signal("duplicate_payment", _ratio(g["paid_instances"], g["known_entities"] or 1), s,
+                      {"period": g["period"], "paid_instances": g["paid_instances"],
+                       "known_entities": g["known_entities"]})
+               for g, s in zip(result.top_groups, subjects)]
+    return MethodResult.build(
+        method=method, dataset=dataset, verdict=Verdict.SUPPORTED,
+        classification=Classification.ANOMALY if result.flagged_groups else Classification.OBSERVATION,
+        records_scanned=result.records_examined, findings_count=1,
+        summary={"groups_examined": result.groups_examined, "flagged_groups": result.flagged_groups,
+                 "flagged_rows": result.flagged_rows, "max_paid_instances": result.max_paid_instances,
+                 "identity_table_used": result.identity_table_used, "merge_map_size": result.merge_map_size,
+                 "values": mode},
+        parameters=params, signals=signals, evidence=_evidence(result.identity, links, truncated),
+        finding_ids=(finding_id,), run_id=run_id)
+
+
 def benford_result(method: MethodRef, dataset: DatasetVersion, result, assessment: Assessment, *, run_id: int,
                    finding_id: int, overridden: bool, anomalous: bool) -> MethodResult:
     """Benford. A run that went ahead despite an unsuitable verdict is reported as completed with a

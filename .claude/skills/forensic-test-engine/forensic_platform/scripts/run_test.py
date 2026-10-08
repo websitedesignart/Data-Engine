@@ -35,17 +35,19 @@ from forensic_platform.tests_engine import benford
 from forensic_platform.tests_engine import duplicate_analysis
 from forensic_platform.tests_engine import fuzzy_entity_match
 from forensic_platform.tests_engine import cross_dataset_match
+from forensic_platform.tests_engine import duplicate_payment
 
 ACTOR = "forensic-test-engine skill"
 
 # Subtests that write record-level evidence, so they need a usable row identity.
-EVIDENCE_SUBTESTS = {"duplicate-analysis", "fuzzy-entity-match", "cross-dataset-match"}
+EVIDENCE_SUBTESTS = {"duplicate-analysis", "fuzzy-entity-match", "cross-dataset-match", "duplicate-payment"}
 
 DISPATCH = {
     "benford": benford,
     "duplicate-analysis": duplicate_analysis,
     "fuzzy-entity-match": fuzzy_entity_match,
     "cross-dataset-match": cross_dataset_match,
+    "duplicate-payment": duplicate_payment,
 }
 
 
@@ -360,6 +362,90 @@ def _finish_cross_dataset_match(cur, args, entry, module, dataset, result) -> No
         params={"exclude_placeholders": not args.include_placeholders}))
 
 
+def _finish_duplicate_payment(cur, args, entry, module, dataset, result) -> None:
+    """Record a duplicate-payment run: entities paid in more invoice-groups this
+    period than they have known real identities."""
+    dataset_id = dataset.dataset_id
+    fields = [args.column, args.period_column, args.invoice_column, args.amount_column]
+    limitations = entry["limitations"]
+    truncated = len(result.evidence) >= args.evidence_limit
+    if truncated:
+        limitations += (f" Evidence links truncated at {args.evidence_limit} rows for this run; "
+                        f"the flagged group counts are complete but the linked rows are not.")
+
+    run_id = base.record_test_run(
+        cur,
+        test_name=module.TEST_NAME,
+        test_version=module.TEST_VERSION,
+        dataset_id=dataset_id,
+        fields_used=fields,
+        params={
+            "schema": args.schema, "table": args.table, "column": args.column,
+            "period_column": args.period_column, "invoice_column": args.invoice_column,
+            "amount_column": args.amount_column, "identity_table": args.identity_table,
+            "identity_table_used": result.identity_table_used, "merge_map_size": result.merge_map_size,
+            "min_paid_instances": args.min_occurrences, "label": args.label,
+        },
+        records_examined=result.records_examined,
+        result_count=result.flagged_groups,
+        query_text=result.query_text,
+        limitations=limitations,
+        status="success",
+    )
+
+    target = f"{args.schema}.{args.table}.{args.column}"
+    if result.flagged_groups == 0:
+        classification = "OBSERVATION"
+        desc = (f"No name/period group in {target} was paid in more invoice-groups than it has "
+                f"known real identities (groups examined: {result.groups_examined}).")
+    else:
+        classification = "ANOMALY"
+        desc = (f"{result.flagged_groups} name/period group(s) in {target} were paid on more "
+                f"distinct invoice numbers than their known real-identity count allows "
+                f"(max {result.max_paid_instances} paid instances), covering "
+                f"{result.flagged_rows} rows of {result.records_examined} examined. "
+                f"Identity table used: {result.identity_table_used}. A flagged group is a "
+                f"structural fact about paid-instance counts, not evidence of wrongdoing.")
+
+    finding_id = base.record_finding(cur, run_id, classification, desc)
+    linked = base.record_evidence_links(
+        cur, finding_id, args.schema, args.table, result.identity, result.evidence)
+
+    base.log_audit(cur, ACTOR, f"run:{args.subtest}", dataset_id, __file__, vars(args), "success")
+
+    top_groups, values_info = _mask_groups(
+        [{"key_value": f"{g['period']}|{g['names'][0]}", **g} for g in result.top_groups[:15]],
+        args.column, args)
+
+    legacy = ({
+        "status": "success",
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "finding_ids": [finding_id],
+        "classification": classification,
+        "test_name": module.TEST_NAME,
+        "test_version": module.TEST_VERSION,
+        "records_examined": result.records_examined,
+        "groups_examined": result.groups_examined,
+        "flagged_groups": result.flagged_groups,
+        "flagged_rows": result.flagged_rows,
+        "max_paid_instances": result.max_paid_instances,
+        "identity_table_used": result.identity_table_used,
+        "merge_map_size": result.merge_map_size,
+        "evidence_links_written": linked,
+        "evidence_identity": result.identity.describe(),
+        "evidence_truncated": truncated,
+        "top_groups": top_groups,
+        **values_info,
+        "limitations": limitations,
+        "query_text": result.query_text,
+    })
+    _emit(args, legacy, lambda: present.duplicate_payment_result(
+        MethodRef(module.TEST_NAME, module.TEST_VERSION), present.dataset_version(dataset), result,
+        run_id=run_id, finding_id=finding_id, links=linked, truncated=truncated, salt=_salt(),
+        params={"min_paid_instances": args.min_occurrences, "identity_table_used": result.identity_table_used}))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", required=True)
@@ -381,6 +467,27 @@ def main() -> None:
     parser.add_argument("--require-digit", action="store_true",
                         help="Treat identifier values containing no digit (e.g. 'MCI', "
                              "'HOSPITAL', a surname) as free text and exclude them")
+    parser.add_argument("--period-column", default=None,
+                        help="duplicate-payment: billing/payment period column")
+    parser.add_argument("--invoice-column", default=None,
+                        help="duplicate-payment: invoice/voucher number column - the paid-instance dimension")
+    parser.add_argument("--amount-column", default=None,
+                        help="duplicate-payment: paid-amount column (only amount > 0 rows count)")
+    parser.add_argument("--identity-table", default=None,
+                        help="duplicate-payment: optional dataset with a real per-entity identifier, used as the "
+                             "flagging ceiling")
+    parser.add_argument("--identity-schema", default=None,
+                        help="duplicate-payment: schema of --identity-table (defaults to --schema)")
+    parser.add_argument("--identity-entity-column", default=None,
+                        help="duplicate-payment: entity/name column on --identity-table")
+    parser.add_argument("--identity-period-column", default=None,
+                        help="duplicate-payment: period column on --identity-table")
+    parser.add_argument("--identity-id-column", default=None,
+                        help="duplicate-payment: the real per-entity identifier column on --identity-table")
+    parser.add_argument("--name-merge-map", default=None,
+                        help="duplicate-payment: JSON object of {collapsed_name: collapsed_name} explicitly "
+                             "human-reviewed spelling-variant merges. Never auto-generate this - ask the user "
+                             "to confirm each pair first")
     parser.add_argument("--evidence-limit", type=int, default=50000)
     parser.add_argument("--threshold", type=float, default=0.55,
                         help="fuzzy-entity-match: similarity threshold for treating two "
@@ -447,6 +554,12 @@ def _execute(args) -> None:
                 ("--schema", args.schema), ("--table", args.table), ("--column", args.column),
                 ("--distinct-of", args.distinct_of), ("--right-table", args.right_table),
                 ("--right-column", args.right_column), ("--right-schema", args.right_schema),
+                ("--period-column", args.period_column), ("--invoice-column", args.invoice_column),
+                ("--amount-column", args.amount_column), ("--identity-table", args.identity_table),
+                ("--identity-schema", args.identity_schema),
+                ("--identity-entity-column", args.identity_entity_column),
+                ("--identity-period-column", args.identity_period_column),
+                ("--identity-id-column", args.identity_id_column),
             ):
                 if value is not None:
                     check_identifier(value, what)
@@ -520,6 +633,19 @@ def _execute(args) -> None:
                         "NO_SUCH_COLUMN")
                 return
 
+        if args.subtest == "duplicate-payment" and args.identity_table:
+            ischema = args.identity_schema or args.schema
+            if not table_exists(cur, ischema, args.identity_table):
+                _refuse(cur, args, dataset_id,
+                        f"Identity table {ischema}.{args.identity_table} does not exist or is not visible to this role.",
+                        "NO_SUCH_TABLE")
+                return
+            for col in (args.identity_entity_column, args.identity_period_column, args.identity_id_column):
+                if col and base.column_info(cur, ischema, args.identity_table, col) is None:
+                    _refuse(cur, args, dataset_id, f"Column '{col}' does not exist on {ischema}.{args.identity_table}.",
+                            "NO_SUCH_COLUMN")
+                    return
+
         module = DISPATCH[args.subtest]
         # A failed statement aborts the whole transaction. The savepoint lets us roll back just
         # the test, keep the dataset registration, and still write the failure to the audit log.
@@ -564,6 +690,33 @@ def _execute(args) -> None:
                     evidence_limit=args.evidence_limit,
                     identity=identity,
                 )
+            elif args.subtest == "duplicate-payment":
+                if not (args.period_column and args.invoice_column and args.amount_column):
+                    _print_refused(args, "MISSING_ARGUMENT",
+                                   "duplicate-payment requires --period-column, --invoice-column and --amount-column.")
+                    return
+                merge_map = None
+                if args.name_merge_map:
+                    try:
+                        merge_map = json.loads(args.name_merge_map)
+                    except (TypeError, ValueError) as exc:
+                        _print_refused(args, "BAD_ARGUMENT", f"--name-merge-map is not valid JSON: {exc}")
+                        return
+                result = module.run(
+                    cur, args.schema, args.table, args.column,
+                    period_column=args.period_column,
+                    invoice_column=args.invoice_column,
+                    amount_column=args.amount_column,
+                    identity_table=args.identity_table,
+                    identity_schema=args.identity_schema,
+                    identity_entity_column=args.identity_entity_column,
+                    identity_period_column=args.identity_period_column,
+                    identity_id_column=args.identity_id_column,
+                    name_merge_map=merge_map,
+                    min_paid_instances=args.min_occurrences,
+                    evidence_limit=args.evidence_limit,
+                    identity=identity,
+                )
             else:
                 suitability = assess_column(cur, benford.RULESET, args.schema, args.table, args.column,
                                             role="amount", confirmed_by=args.confirmed_by)
@@ -601,6 +754,9 @@ def _execute(args) -> None:
             return
         if args.subtest == "cross-dataset-match":
             _finish_cross_dataset_match(cur, args, entry, module, dataset, result)
+            return
+        if args.subtest == "duplicate-payment":
+            _finish_duplicate_payment(cur, args, entry, module, dataset, result)
             return
 
         run_id = base.record_test_run(

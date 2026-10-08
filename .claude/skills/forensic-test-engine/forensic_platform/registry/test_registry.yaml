@@ -63,7 +63,64 @@ tests:
   threshold-proximity: {status: not_implemented}
   vendor-analysis: {status: not_implemented}
   employee-vendor-match: {status: not_implemented}
-  duplicate-payment: {status: not_implemented}
+  duplicate-payment:
+    status: implemented
+    version: "1.0.0"
+    module: forensic_platform.tests_engine.duplicate_payment
+    required_fields:
+      - name: column
+        type: any
+        description: Entity/name column on the payment table (the `table` the caller supplies must already union every source system to be checked - one, two, or more).
+      - name: period_column
+        type: any
+        description: Billing/payment period column (text or date). Grouping is always (entity, period) - never entity alone.
+      - name: invoice_column
+        type: any
+        description: Invoice/voucher number column. This is the dimension being counted as a "paid instance"; rows sharing one invoice number are one instance, not several.
+      - name: amount_column
+        type: numeric
+        description: Paid-amount column. Only rows with amount > 0 count as a paid instance.
+      - name: identity_table
+        type: any
+        optional: true
+        description: >
+          Optional dataset carrying a real per-entity identifier independent of the payment
+          rows (an account number or similar - never derived from the payment data itself).
+          When supplied, becomes the ceiling: a name/period is flagged only when its paid-instance
+          count EXCEEDS the number of distinct identifiers that table shows for that name/period.
+      - name: name_merge_map
+        type: any
+        optional: true
+        description: >
+          Optional, explicitly human-reviewed {collapsed_name: collapsed_name} map for genuine
+          spelling/transliteration variants of one entity. Never auto-generated - see limitations.
+    parameters:
+      min_paid_instances: 2
+      evidence_limit: 50000
+    algorithm: >
+      Groups payment rows by (period, canonical entity key), counts distinct invoice numbers per
+      group as the paid-instance count, and flags a group when that count exceeds the number of
+      real distinct identities known for that name/period (from an optional identity_table), or
+      exceeds min_paid_instances when no identity table is supplied. The canonical key collapses
+      only honorific prefixes and whitespace automatically (always safe); genuine spelling
+      variants are collapsed only via an explicit, human-reviewed name_merge_map entry - never by
+      automatic fuzzy matching, because a false merge here directly produces a false duplicate
+      accusation. Grouping never crosses periods and never collapses distinct invoice numbers,
+      so this correctly detects both (a) the same entity appearing in two differently-labelled
+      source systems for one period, and (b) the same entity appearing twice on different invoice
+      numbers within a single source system - the same underlying anomaly either way.
+    limitations: >
+      Without an identity_table this is a naive "appears on N+ invoices this period" flag and
+      cannot rule out two different real entities who happen to share a name - verified as a real
+      false-positive risk during development (two distinct identities, one paid instance each,
+      naive logic would flag the pair; the identity-table ceiling check exists specifically to
+      prevent this). name_merge_map entries are taken on trust; an incorrect entry can both cause
+      a false merge (two different people called the same) and, if omitted where it was needed,
+      leave a real duplicate split into two separate unflagged groups. The caller is responsible
+      for presenting the table as a single table or view already unioning every source system to
+      be checked - this test has no way to discover additional sources on its own. A flagged
+      group is a structural fact about paid-instance counts, never in itself evidence of
+      wrongdoing.
   cross-dataset-match:
     status: implemented
     version: "1.0.0"

@@ -39,7 +39,8 @@ never guesses a database.
 | `duplicate-analysis` | Duplicate identifiers, and one identifier shared across many distinct values (e.g. one registration number used by many names or establishments) | implemented |
 | `fuzzy-entity-match` | Spelling variants collapsed before counting distinct entities, so identity conflicts aren't inflated by typos | implemented |
 | `cross-dataset-match` | Reconciliation and referential completeness between two datasets | implemented |
-| `gap-sequence`, `round-number`, `outlier`, `split-transaction`, `threshold-proximity`, `vendor-analysis`, `employee-vendor-match`, `duplicate-payment`, `journal-entry`, `date-time-anomaly`, `velocity-analysis` | — | registered, not yet implemented |
+| `duplicate-payment` | An entity paid on more invoice-groups than it has known real identities for one period (same anomaly whether the groups come from two labelled source systems or two invoice numbers within one system); an optional identity dataset sets the flagging ceiling so entities who merely share a name aren't misread as one entity paid twice | implemented |
+| `gap-sequence`, `round-number`, `outlier`, `split-transaction`, `threshold-proximity`, `vendor-analysis`, `employee-vendor-match`, `journal-entry`, `date-time-anomaly`, `velocity-analysis` | — | registered, not yet implemented |
 | `custom-test` | Investigator-defined tests. They must be registered before they can run | extension point |
 
 If a subtest isn't implemented, or a required column is missing or the wrong type, the engine

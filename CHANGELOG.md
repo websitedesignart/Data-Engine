@@ -1,6 +1,27 @@
 # Changelog
 
 ## [Unreleased]
+- **New `duplicate-payment` subtest, filling the slot left `not_implemented` in the registry**
+  (`tests_engine/duplicate_payment.py`, `test_duplicate_payment.py`, `core/present.py`,
+  `scripts/run_test.py`). Detects an entity paid in more invoice-groups than it has known real
+  identities for one period - the same anomaly whether those groups come from two differently
+  labelled source systems (e.g. two sections of one office each billing the same pool of staff)
+  or from two different invoice numbers inside a single source system; the test groups by
+  (period, invoice number) and does not care how many labelled sources the caller's table has.
+  Takes an optional `identity_table` (a dataset with a real per-entity identifier independent of
+  the payment rows) as the flagging ceiling: a name/period is flagged only when its paid-instance
+  count *exceeds* the number of distinct identifiers known for that name/period, not merely when
+  it appears more than once. Without that ceiling, two different real people who happen to share
+  a name, each paid once in a different invoice-group, would otherwise read as one person paid
+  twice - verified as a real false-positive shape during development and covered directly by
+  `test_duplicate_payment.py`.
+  Name matching only auto-collapses honorific prefixes and whitespace (always safe); genuine
+  spelling/transliteration variants require an explicit, human-reviewed `name_merge_map` entry
+  rather than automatic fuzzy clustering, because here - unlike `fuzzy-entity-match`'s existing use,
+  where a false merge only understates a lower bound - a false merge directly produces a false
+  duplicate-payment accusation. Edit-distance alone cannot tell a true spelling variant from two
+  different people with similarly-spelled names (both shapes were observed with identical edit
+  distance on the same real dataset during development), so that judgement call is never automated.
 - **`run_suite`: check a whole table in one call** (`scripts/run_suite.py`, `core/suite.py`). Before,
   Claude had to work out and run each method separately. Now one command plans the applicable
   methods and returns one combined, compact result, with `ran`, `declined`, `refused`, `errors`,
