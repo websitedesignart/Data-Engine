@@ -52,6 +52,27 @@ Subtest-specific arguments for `run_test.py`:
 - `cross-dataset-match`: required `--right-table` and `--right-column`,
   optional `--right-schema`.
 
+## Feeding real engagements back into the registry
+
+When work on a real case finalises and surfaces an anomaly-detection method that isn't
+in the registry yet (a new duplicate-check shape, a new reconciliation rule, a new
+statistical test), add it here as a new registered subtest rather than leaving it as
+one-off code in that case's folder - that is how the registry grows. Anonymise fully
+before it goes in:
+
+- No real data, figures or extracted values of any kind - synthetic fixtures only (see
+  `test_fuzzy_entity_match.py` and `test_duplicate_payment.py` for the pattern).
+- No office, department or section name, and no real person's name. A generic office
+  *type* is fine as an example in a docstring (e.g. "a district health office"), but
+  never the specific office or location the case concerned.
+- The algorithm, its rationale and its limitations are what belongs here; the case that
+  motivated it does not need to be identifiable for the module to be useful elsewhere.
+
+This mirrors the companion skill's own rule for its risk-pattern library (reusable
+methodology only, no case facts) - see https://github.com/websitedesignart/audit-research-engine.
+A reusable **audit methodology or records-to-request suggestion** (as opposed to a
+deterministic test) belongs in that repo instead, not here.
+
 ## Workflow
 
 1. Identify the target: database, schema, table, and column(s) the subtest needs. If any of this is ambiguous, inspect the schema (a read-only database connection for that case, or `information_schema`). Never guess a name.
